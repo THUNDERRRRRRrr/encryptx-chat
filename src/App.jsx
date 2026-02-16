@@ -185,9 +185,30 @@ const formatTime = (timestamp) => {
 };
 
 const buildPrivateChannelId = (myUniqueId, peerUniqueId) => {
-  if (!myUniqueId || !peerUniqueId) return null;
-  const [first, second] = [String(myUniqueId), String(peerUniqueId)].sort();
-  return `dm_${first}_${second}`;
+  if (!myUniqueId || !peerUniqueId) {
+    console.warn('[EncryptX] buildPrivateChannelId: Missing ID', { myUniqueId, peerUniqueId });
+    return null;
+  }
+  // CRITICAL FIX: Ensure both IDs are strings and trimmed to avoid type mismatches
+  const id1 = String(myUniqueId).trim();
+  const id2 = String(peerUniqueId).trim();
+  
+  if (!id1 || !id2) {
+    console.error('[EncryptX] Invalid unique IDs after conversion', { id1, id2 });
+    return null;
+  }
+  
+  // Sort alphabetically to ensure same channel ID for both users
+  const [first, second] = [id1, id2].sort();
+  const channelId = `dm_${first}_${second}`;
+  
+  console.log('[EncryptX] Generated private channel ID:', {
+    myUniqueId: id1,
+    peerUniqueId: id2,
+    channelId
+  });
+  
+  return channelId;
 };
 
 const suggestUniqueFiveDigitId = (users) => {
@@ -447,6 +468,18 @@ export default function EncryptX() {
     return () => clearInterval(timerRef.current);
   }, [isRecording]);
 
+  // Debug: Log active chat changes
+  useEffect(() => {
+    console.log('[EncryptX] Active chat changed:', {
+      activeChat,
+      appUser: appUser ? {
+        id: appUser.id,
+        username: appUser.username,
+        unique_id: appUser.unique_id
+      } : null
+    });
+  }, [activeChat.id]);
+
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (selectedMsg && !e.target.closest('button') && !e.target.closest('.message-bubble')) setSelectedMsg(null);
@@ -700,6 +733,13 @@ export default function EncryptX() {
     if (e) e.preventDefault();
     if (type === 'text') triggerBlink('send-btn'); // Trigger Blink
 
+    // CRITICAL FIX: Validate appUser exists before sending
+    if (!appUser || !appUser.id || !appUser.unique_id) {
+      console.error('[EncryptX] Cannot send message: appUser not loaded', appUser);
+      alert('Please wait for your profile to load before sending messages.');
+      return;
+    }
+
     const msgContent = content || inputText.trim();
     if (!msgContent && type === 'text') return;
 
@@ -708,6 +748,21 @@ export default function EncryptX() {
     const docIdToEdit = isForwarding ? null : editingMsgId;
     const replyContext = isForwarding ? null : (replyTo ? { id: replyTo.id, user: replyTo.user, text: replyTo.text || "[Media]" } : null);
     const destinationId = targetChannelId || activeChat.id;
+
+    // CRITICAL FIX: Validate destination channel ID
+    if (!destinationId) {
+      console.error('[EncryptX] Cannot send message: No destination channel ID', { activeChat, targetChannelId });
+      alert('Please select a chat first.');
+      return;
+    }
+
+    console.log('[EncryptX] Sending message:', {
+      type,
+      destinationId,
+      activeChatId: activeChat.id,
+      activeChatType: activeChat.type,
+      appUserUniqueId: appUser.unique_id
+    });
 
     if (!isForwarding) {
       setInputText(""); setReplyTo(null); setEditingMsgId(null); closeMenus();
@@ -738,9 +793,11 @@ export default function EncryptX() {
             isPinned: false, read_by: [appUser.id], reactions: {}, replyTo: replyContext,
             channelId: destinationId
           });
+          console.log('[EncryptX] Message sent successfully to channel:', destinationId);
           sent = true;
         } catch (err) {
           lastError = err;
+          console.error(`[EncryptX] Send attempt ${attempt + 1} failed:`, err);
           if (attempt < 2) {
             await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
           }
@@ -754,7 +811,10 @@ export default function EncryptX() {
         setMsgToForward(null);
       }
 
-    } catch (err) { console.error("Transmission failed:", err); }
+    } catch (err) { 
+      console.error("[EncryptX] Transmission failed:", err); 
+      alert(`Failed to send message: ${err.message}`);
+    }
   };
 
   const handleForward = (targetChannelId) => {
@@ -936,7 +996,20 @@ export default function EncryptX() {
     );
   };
 
-  const filteredMessages = messages.filter(m => (m.channelId || 'global') === activeChat.id);
+  const filteredMessages = messages.filter(m => {
+    const msgChannelId = m.channelId || 'global';
+    return msgChannelId === activeChat.id;
+  });
+  
+  // Debug logging (can be removed in production)
+  if (filteredMessages.length === 0 && messages.length > 0) {
+    console.log('[EncryptX] No messages match current chat:', {
+      activeChatId: activeChat.id,
+      activeChatType: activeChat.type,
+      totalMessages: messages.length,
+      sampleChannelIds: messages.slice(0, 5).map(m => ({ id: m.id, channelId: m.channelId || 'global', user: m.user }))
+    });
+  }
   const renderMessageList = () => {
     const rendered = [];
     filteredMessages.forEach((msg, index) => {
@@ -1010,7 +1083,17 @@ export default function EncryptX() {
               key={contact.id || idx}
               onClick={() => {
                 const privateChannelId = getPrivateChatChannelId(contact.contact_unique_id);
-                if (!privateChannelId) return;
+                console.log('[EncryptX] Opening contact chat:', {
+                  contactUsername: contact.contact_username,
+                  myUniqueId: appUser?.unique_id,
+                  contactUniqueId: contact.contact_unique_id,
+                  generatedChannelId: privateChannelId
+                });
+                
+                if (!privateChannelId) {
+                  alert('Error: Could not create chat channel. Please refresh and try again.');
+                  return;
+                }
                 setActiveChat({
                   id: privateChannelId,
                   name: contact.contact_nickname || contact.contact_username,

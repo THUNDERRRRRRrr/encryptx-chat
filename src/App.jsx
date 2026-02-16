@@ -239,6 +239,8 @@ const suggestUniqueFiveDigitId = (users) => {
 
 export default function EncryptX() {
   const [firebaseUser, setFirebaseUser] = useState(null);
+  const [isFirebaseAuthReady, setIsFirebaseAuthReady] = useState(false);
+  const [firebaseAuthError, setFirebaseAuthError] = useState("");
   const [appUser, setAppUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [contacts, setContacts] = useState([]);
@@ -338,7 +340,17 @@ export default function EncryptX() {
 
   // --- LOGIC: INITIALIZATION ---
   useEffect(() => {
-    if (!auth) return;
+    if (!auth) {
+      setFirebaseAuthError("Firebase authentication is not initialized.");
+      setIsFirebaseAuthReady(true);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+      setIsFirebaseAuthReady(true);
+    });
+
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -348,10 +360,12 @@ export default function EncryptX() {
         }
       } catch (e) {
         console.error("Auth Init Error:", e);
+        setFirebaseAuthError(e?.message || "Authentication initialization failed.");
+        setIsFirebaseAuthReady(true);
       }
     };
     initAuth();
-    return onAuthStateChanged(auth, (user) => setFirebaseUser(user));
+    return unsubscribe;
   }, []);
 
   // Restore app user from localStorage on mount
@@ -375,7 +389,7 @@ export default function EncryptX() {
   }, [blockedUsers]);
 
   useEffect(() => {
-    if (!appUser || !firebaseUser || !db) return;
+    if (!appUser || !db) return;
 
     const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', appUser.id);
     const updatePresence = () => {
@@ -466,7 +480,7 @@ export default function EncryptX() {
       clearInterval(heartbeat);
       updateDoc(userDocRef, { isOnline: false }).catch(() => { });
     };
-  }, [appUser?.id, firebaseUser, activeChat.id]);
+  }, [appUser?.id, activeChat.id]);
 
   // Scroll
   useLayoutEffect(() => {
@@ -527,7 +541,10 @@ export default function EncryptX() {
 
     if (!usernameInput || !passwordInput) { setAuthError("Please fill in Username and Password."); return; }
     if (authMode === 'register' && !/^\d{5}$/.test(uniqueIdInput)) { setAuthError("Security ID must be exactly 5 digits (0-9)."); return; }
-    if (!firebaseUser) { setAuthError("Secure session is not ready yet. Please wait a second and try again."); return; }
+    if (!isFirebaseAuthReady) { setAuthError("Secure session is still initializing. Please try again in a second."); return; }
+    if (firebaseAuthError) {
+      console.warn('[EncryptX] Firebase auth warning:', firebaseAuthError);
+    }
     setAuthError("");
 
     try {
@@ -625,6 +642,7 @@ export default function EncryptX() {
   const handleSearch = async () => {
     triggerBlink('locate-btn'); // Trigger Blink
     if (!searchQuery) return;
+    if (!db) { alert("Database is not connected."); return; }
     const trimmed = searchQuery.trim();
     const normalizedQueryId = normalizeUniqueId(trimmed);
     const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
@@ -662,6 +680,7 @@ export default function EncryptX() {
 
   const addContact = async () => {
     if (!searchResult) return;
+    if (!db) { alert("Database is not connected."); return; }
     const contactUniqueId = normalizeUniqueId(searchResult.unique_id);
     const exists = contacts.find(c => normalizeUniqueId(c.contact_unique_id) === contactUniqueId);
     if (exists) { alert("Already in contacts."); return; }
@@ -764,6 +783,11 @@ export default function EncryptX() {
   const submitMessage = async (e, type = 'text', content = null, targetChannelId = null) => {
     if (e) e.preventDefault();
     if (type === 'text') triggerBlink('send-btn'); // Trigger Blink
+
+    if (!db) {
+      alert('Database is not connected.');
+      return;
+    }
 
     // CRITICAL FIX: Validate appUser exists before sending
     if (!appUser || !appUser.id || !/^\d{5}$/.test(normalizeUniqueId(appUser.unique_id))) {
@@ -1069,6 +1093,7 @@ export default function EncryptX() {
         <div className={`w-full max-w-md p-8 rounded-2xl ${currentTheme.sidebar} border ${currentTheme.border} shadow-2xl relative overflow-hidden backdrop-blur-xl animate-in zoom-in duration-300`}>
           <div className="flex flex-col items-center mb-8"><Shield className={`w-20 h-20 ${currentTheme.accent} mb-4`} /><h1 className={`text-4xl font-bold tracking-tighter ${currentTheme.text}`}>EncryptX</h1><p className={`${currentTheme.accent} text-xs tracking-[0.3em] mt-1 opacity-80`}>SECURE PROTOCOL V3.5</p></div>
           {authError && <div className="bg-red-900/50 border border-red-500 text-red-200 px-4 py-3 rounded mb-6 text-sm flex items-center gap-2"><X className="w-4 h-4" /> {authError}</div>}
+          {!authError && firebaseAuthError && <div className="bg-yellow-900/30 border border-yellow-500/40 text-yellow-200 px-4 py-3 rounded mb-6 text-xs">Auth warning: {firebaseAuthError}</div>}
           <div className="space-y-4">
             <div className="relative group"><User className="absolute left-4 top-3.5 w-5 h-5 text-gray-500" /><input value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} className={`w-full pl-12 pr-4 py-3 rounded-xl ${currentTheme.inputBg} ${currentTheme.text} border border-gray-700 focus:${currentTheme.border} outline-none`} placeholder="CODENAME" /></div>
             {authMode === 'register' && (<div className="relative group"><Key className="absolute left-4 top-3.5 w-5 h-5 text-gray-500" /><input value={authUniqueId} onChange={(e) => setAuthUniqueId(e.target.value.replace(/\D/g, '').slice(0, 5))} className={`w-full pl-12 pr-4 py-3 rounded-xl ${currentTheme.inputBg} ${currentTheme.text} border border-gray-700 focus:${currentTheme.border} outline-none`} placeholder="5-DIGIT SECURE ID" /></div>)}

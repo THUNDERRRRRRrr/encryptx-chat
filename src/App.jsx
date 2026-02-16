@@ -41,7 +41,10 @@ import {
   deleteDoc,
   setDoc,
   query,
-  where
+  where,
+  orderBy,
+  limit,
+  arrayUnion
 } from 'firebase/firestore';
 
 // ==========================================
@@ -281,6 +284,7 @@ export default function EncryptX() {
   const getPrivateChatChannelId = (peerUniqueId) => {
     return buildPrivateChannelId(appUser?.unique_id, peerUniqueId);
   };
+  const blockedUsersRef = useRef(blockedUsers);
 
   const chatEndRef = useRef(null);
   const timerRef = useRef(null);
@@ -339,6 +343,10 @@ export default function EncryptX() {
 
   // --- LOGIC: DATA LISTENERS ---
   useEffect(() => {
+    blockedUsersRef.current = blockedUsers;
+  }, [blockedUsers]);
+
+  useEffect(() => {
     if (!appUser || !firebaseUser || !db) return;
 
     const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', appUser.id);
@@ -367,13 +375,14 @@ export default function EncryptX() {
     });
 
     const msgsRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-    const unsubMsg = onSnapshot(msgsRef, (snapshot) => {
+    const msgsQuery = query(msgsRef, orderBy('timestamp', 'desc'), limit(500));
+    const unsubMsg = onSnapshot(msgsQuery, (snapshot) => {
       const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       const now = Date.now();
 
       const processedMsgs = msgs
         .filter(m => {
-          if (blockedUsers.includes(m.userId)) return false;
+          if (blockedUsersRef.current.includes(m.userId)) return false;
           if (m.expiresAt && m.expiresAt.toMillis() <= now) return false;
           return true;
         })
@@ -396,7 +405,7 @@ export default function EncryptX() {
             if (activeChat.id === (msgData.channelId || 'global')) {
               if (!msgData.read_by?.includes(appUser.id)) {
                 updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'messages', change.doc.id), {
-                  read_by: [...(msgData.read_by || []), appUser.id]
+                  read_by: arrayUnion(appUser.id)
                 });
               }
             }
@@ -425,7 +434,7 @@ export default function EncryptX() {
       clearInterval(heartbeat);
       updateDoc(userDocRef, { isOnline: false }).catch(() => { });
     };
-  }, [appUser?.id, firebaseUser, blockedUsers, activeChat.id]);
+  }, [appUser?.id, firebaseUser, activeChat.id]);
 
   // Scroll
   useLayoutEffect(() => {
@@ -718,13 +727,26 @@ export default function EncryptX() {
         now.setSeconds(now.getSeconds() + autoDeleteTimer);
         expiresAt = now;
       }
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
-        user: appUser.username, userId: appUser.id, nickname: appUser.nickname,
-        text: type === 'text' ? msgContent : '', content: msgContent, type: type,
-        timestamp: serverTimestamp(), createdAt: Date.now(), expiresAt: expiresAt,
-        isPinned: false, read_by: [appUser.id], reactions: {}, replyTo: replyContext,
-        channelId: destinationId
-      });
+      let sent = false;
+      let lastError = null;
+      for (let attempt = 0; attempt < 3 && !sent; attempt += 1) {
+        try {
+          await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
+            user: appUser.username, userId: appUser.id, nickname: appUser.nickname,
+            text: type === 'text' ? msgContent : '', content: msgContent, type: type,
+            timestamp: serverTimestamp(), createdAt: Date.now(), expiresAt: expiresAt,
+            isPinned: false, read_by: [appUser.id], reactions: {}, replyTo: replyContext,
+            channelId: destinationId
+          });
+          sent = true;
+        } catch (err) {
+          lastError = err;
+          if (attempt < 2) {
+            await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+          }
+        }
+      }
+      if (!sent) throw lastError || new Error("Failed to send message");
 
       if (isForwarding) {
         alert("Message Forwarded!");

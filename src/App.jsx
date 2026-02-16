@@ -184,16 +184,22 @@ const formatTime = (timestamp) => {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
+const normalizeUniqueId = (value) => {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.padStart(5, '0').slice(-5);
+};
+
 const buildPrivateChannelId = (myUniqueId, peerUniqueId) => {
   if (!myUniqueId || !peerUniqueId) {
     console.warn('[EncryptX] buildPrivateChannelId: Missing ID', { myUniqueId, peerUniqueId });
     return null;
   }
-  // CRITICAL FIX: Ensure both IDs are strings and trimmed to avoid type mismatches
-  const id1 = String(myUniqueId).trim();
-  const id2 = String(peerUniqueId).trim();
+  // Canonical 5-digit IDs prevent "1" vs "00001" mismatches.
+  const id1 = normalizeUniqueId(myUniqueId);
+  const id2 = normalizeUniqueId(peerUniqueId);
   
-  if (!id1 || !id2) {
+  if (!/^\d{5}$/.test(id1) || !/^\d{5}$/.test(id2)) {
     console.error('[EncryptX] Invalid unique IDs after conversion', { id1, id2 });
     return null;
   }
@@ -212,7 +218,7 @@ const buildPrivateChannelId = (myUniqueId, peerUniqueId) => {
 };
 
 const suggestUniqueFiveDigitId = (users) => {
-  const used = new Set(users.map(u => String(u.unique_id || "")).filter(id => /^\d{5}$/.test(id)));
+  const used = new Set(users.map(u => normalizeUniqueId(u.unique_id)).filter(id => /^\d{5}$/.test(id)));
   if (used.size >= 100000) return null;
 
   for (let i = 0; i < 300; i += 1) {
@@ -354,6 +360,7 @@ export default function EncryptX() {
     if (savedUser && !appUser) {
       try {
         const parsedUser = JSON.parse(savedUser);
+        if (parsedUser?.unique_id) parsedUser.unique_id = normalizeUniqueId(parsedUser.unique_id);
         setAppUser(parsedUser);
       } catch (e) {
         console.error("Error restoring user:", e);
@@ -390,7 +397,11 @@ export default function EncryptX() {
     const unsubUser = onSnapshot(userDocRef, (doc) => {
       if (doc.exists()) {
         const data = doc.data();
-        setAppUser(prev => ({ ...prev, ...data }));
+        const canonicalUniqueId = normalizeUniqueId(data.unique_id);
+        setAppUser(prev => ({ ...prev, ...data, unique_id: canonicalUniqueId || data.unique_id }));
+        if (canonicalUniqueId && canonicalUniqueId !== data.unique_id) {
+          updateDoc(userDocRef, { unique_id: canonicalUniqueId }).catch(() => { });
+        }
         if (data.blocked_users) setBlockedUsers(data.blocked_users);
       }
     });
@@ -512,10 +523,11 @@ export default function EncryptX() {
     triggerBlink('auth-btn'); // Trigger Blink
     const usernameInput = authUsername.trim();
     const passwordInput = authPassword.trim();
-    const uniqueIdInput = authUniqueId.trim();
+    const uniqueIdInput = normalizeUniqueId(authUniqueId);
 
     if (!usernameInput || !passwordInput) { setAuthError("Please fill in Username and Password."); return; }
     if (authMode === 'register' && !/^\d{5}$/.test(uniqueIdInput)) { setAuthError("Security ID must be exactly 5 digits (0-9)."); return; }
+    if (!firebaseUser) { setAuthError("Secure session is not ready yet. Please wait a second and try again."); return; }
     setAuthError("");
 
     try {
@@ -526,7 +538,7 @@ export default function EncryptX() {
 
       if (authMode === 'register') {
         if (users.find(u => u.username?.toLowerCase() === usernameInput.toLowerCase())) { setAuthError("Username taken."); return; }
-        if (users.find(u => String(u.unique_id) === uniqueIdInput)) {
+        if (users.find(u => normalizeUniqueId(u.unique_id) === uniqueIdInput)) {
           const suggestedId = suggestUniqueFiveDigitId(users);
           if (suggestedId) {
             setAuthUniqueId(suggestedId);
@@ -553,12 +565,28 @@ export default function EncryptX() {
         );
         if (!foundUser) setAuthError("Invalid credentials.");
         else {
-          setAppUser(foundUser);
+          let canonicalUniqueId = normalizeUniqueId(foundUser.unique_id);
+          if (!canonicalUniqueId) {
+            canonicalUniqueId = suggestUniqueFiveDigitId(users);
+            if (!canonicalUniqueId) {
+              setAuthError("No available 5-digit IDs found for this account.");
+              return;
+            }
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', foundUser.id), { unique_id: canonicalUniqueId });
+          } else if (canonicalUniqueId !== foundUser.unique_id) {
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', foundUser.id), { unique_id: canonicalUniqueId });
+          }
+
+          const normalizedUser = { ...foundUser, unique_id: canonicalUniqueId };
+          setAppUser(normalizedUser);
           // Save to localStorage
-          localStorage.setItem('encryptx_user', JSON.stringify(foundUser));
+          localStorage.setItem('encryptx_user', JSON.stringify(normalizedUser));
         }
       }
-    } catch (error) { setAuthError("Connection error."); }
+    } catch (error) {
+      const reason = error?.message || error?.code || "Unknown issue";
+      setAuthError(`Connection error: ${reason}`);
+    }
   };
 
   const openProfile = () => {
@@ -597,6 +625,8 @@ export default function EncryptX() {
   const handleSearch = async () => {
     triggerBlink('locate-btn'); // Trigger Blink
     if (!searchQuery) return;
+    const trimmed = searchQuery.trim();
+    const normalizedQueryId = normalizeUniqueId(trimmed);
     const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
 
     // Optimised Search: Try specific queries first
@@ -604,7 +634,7 @@ export default function EncryptX() {
 
     // 1. Search by unique_id (Fastest)
     try {
-      const qId = query(usersRef, where('unique_id', '==', searchQuery));
+      const qId = query(usersRef, where('unique_id', '==', normalizedQueryId));
       const snapId = await getDocs(qId);
       if (!snapId.empty) found = snapId.docs[0].data();
     } catch (e) { console.log("Index query failed, falling back"); }
@@ -612,7 +642,7 @@ export default function EncryptX() {
     // 2. Search by username if no ID match
     if (!found) {
       try {
-        const qUser = query(usersRef, where('username', '==', searchQuery));
+        const qUser = query(usersRef, where('username', '==', trimmed));
         const snapUser = await getDocs(qUser);
         if (!snapUser.empty) found = snapUser.docs[0].data();
       } catch (e) { console.log("Index query failed"); }
@@ -622,7 +652,8 @@ export default function EncryptX() {
     if (!found) {
       const snap = await getDocs(usersRef);
       const users = snap.docs.map(d => d.data());
-      found = users.find(u => u.unique_id === searchQuery) || users.find(u => u.username === searchQuery);
+      found = users.find(u => normalizeUniqueId(u.unique_id) === normalizedQueryId)
+        || users.find(u => u.username === trimmed);
     }
 
     if (found) setSearchResult(found);
@@ -631,11 +662,12 @@ export default function EncryptX() {
 
   const addContact = async () => {
     if (!searchResult) return;
-    const exists = contacts.find(c => c.contact_unique_id === searchResult.unique_id);
+    const contactUniqueId = normalizeUniqueId(searchResult.unique_id);
+    const exists = contacts.find(c => normalizeUniqueId(c.contact_unique_id) === contactUniqueId);
     if (exists) { alert("Already in contacts."); return; }
     await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'contacts'), {
       owner_username: appUser.username, contact_username: searchResult.username,
-      contact_unique_id: searchResult.unique_id, contact_nickname: searchResult.nickname
+      contact_unique_id: contactUniqueId, contact_nickname: searchResult.nickname
     });
     setSearchResult(null); setShowAddContact(false); setSearchQuery("");
   };
@@ -676,7 +708,7 @@ export default function EncryptX() {
     const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
     const snap = await getDocs(usersRef);
     const users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    const foundUser = users.find(u => u.unique_id === memberAddQuery);
+    const foundUser = users.find(u => normalizeUniqueId(u.unique_id) === normalizeUniqueId(memberAddQuery));
 
     if (foundUser) {
       if (group.members.includes(foundUser.id)) { alert("User already in group."); return; }
@@ -734,9 +766,9 @@ export default function EncryptX() {
     if (type === 'text') triggerBlink('send-btn'); // Trigger Blink
 
     // CRITICAL FIX: Validate appUser exists before sending
-    if (!appUser || !appUser.id || !appUser.unique_id) {
+    if (!appUser || !appUser.id || !/^\d{5}$/.test(normalizeUniqueId(appUser.unique_id))) {
       console.error('[EncryptX] Cannot send message: appUser not loaded', appUser);
-      alert('Please wait for your profile to load before sending messages.');
+      alert('Your profile is missing a valid 5-digit ID. Re-login and try again.');
       return;
     }
 
@@ -1189,7 +1221,7 @@ export default function EncryptX() {
                 {/* Add Member Input */}
                 {groups.find(g => g.id === activeChat.id)?.admins.includes(appUser.id) && (
                   <div className="flex gap-2">
-                    <input value={memberAddQuery} onChange={(e) => setMemberAddQuery(e.target.value)} placeholder="Add member via 5-digit ID..." className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-white/30" />
+                    <input value={memberAddQuery} onChange={(e) => setMemberAddQuery(e.target.value.replace(/\D/g, '').slice(0, 5))} placeholder="Add member via 5-digit ID..." className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-white/30" />
                     <button onClick={handleAddMember} className={`${currentTheme.accentBg} text-black p-2 rounded-lg hover:opacity-90`}><UserPlus className="w-4 h-4" /></button>
                   </div>
                 )}
@@ -1296,7 +1328,7 @@ export default function EncryptX() {
               <p className="text-xs opacity-50 mt-1">Enter the 5-digit Secure ID to locate user.</p>
             </div>
             <div className="flex gap-2 mb-2">
-              <input autoFocus value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="5-digit ID..." className={`flex-1 bg-black/40 border ${currentTheme.border} rounded-xl px-4 py-3 outline-none text-center font-mono text-lg tracking-widest`} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} />
+              <input autoFocus value={searchQuery} onChange={(e) => setSearchQuery(e.target.value.replace(/\D/g, '').slice(0, 5))} placeholder="5-digit ID..." className={`flex-1 bg-black/40 border ${currentTheme.border} rounded-xl px-4 py-3 outline-none text-center font-mono text-lg tracking-widest`} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} />
             </div>
             <button
               id="locate-btn"

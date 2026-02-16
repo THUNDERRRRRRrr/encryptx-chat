@@ -187,6 +187,22 @@ const buildPrivateChannelId = (myUniqueId, peerUniqueId) => {
   return `dm_${first}_${second}`;
 };
 
+const suggestUniqueFiveDigitId = (users) => {
+  const used = new Set(users.map(u => String(u.unique_id || "")).filter(id => /^\d{5}$/.test(id)));
+  if (used.size >= 100000) return null;
+
+  for (let i = 0; i < 300; i += 1) {
+    const candidate = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
+    if (!used.has(candidate)) return candidate;
+  }
+
+  for (let i = 0; i < 100000; i += 1) {
+    const candidate = String(i).padStart(5, '0');
+    if (!used.has(candidate)) return candidate;
+  }
+  return null;
+};
+
 // ==========================================
 // PART 2: MAIN APPLICATION COMPONENT
 // ==========================================
@@ -468,7 +484,16 @@ export default function EncryptX() {
 
       if (authMode === 'register') {
         if (users.find(u => u.username?.toLowerCase() === usernameInput.toLowerCase())) { setAuthError("Username taken."); return; }
-        if (users.find(u => u.unique_id === uniqueIdInput)) { setAuthError("ID already exists."); return; }
+        if (users.find(u => String(u.unique_id) === uniqueIdInput)) {
+          const suggestedId = suggestUniqueFiveDigitId(users);
+          if (suggestedId) {
+            setAuthUniqueId(suggestedId);
+            setAuthError(`ID ${uniqueIdInput} already exists. Suggested available ID: ${suggestedId}`);
+          } else {
+            setAuthError("All 5-digit IDs are used. Contact admin.");
+          }
+          return;
+        }
 
         const newUser = {
           username: usernameInput, password: passwordInput, unique_id: uniqueIdInput,

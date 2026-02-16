@@ -181,6 +181,12 @@ const formatTime = (timestamp) => {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
+const buildPrivateChannelId = (myUniqueId, peerUniqueId) => {
+  if (!myUniqueId || !peerUniqueId) return null;
+  const [first, second] = [String(myUniqueId), String(peerUniqueId)].sort();
+  return `dm_${first}_${second}`;
+};
+
 // ==========================================
 // PART 2: MAIN APPLICATION COMPONENT
 // ==========================================
@@ -255,6 +261,10 @@ export default function EncryptX() {
   const [authUniqueId, setAuthUniqueId] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
+
+  const getPrivateChatChannelId = (peerUniqueId) => {
+    return buildPrivateChannelId(appUser?.unique_id, peerUniqueId);
+  };
 
   const chatEndRef = useRef(null);
   const timerRef = useRef(null);
@@ -389,7 +399,7 @@ export default function EncryptX() {
 
     const contactsRef = collection(db, 'artifacts', appId, 'public', 'data', 'contacts');
     const unsubContacts = onSnapshot(contactsRef, (snapshot) => {
-      const allContacts = snapshot.docs.map(doc => doc.data());
+      const allContacts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       const myContacts = allContacts.filter(c => c.owner_username === appUser.username);
       setContacts(myContacts);
     });
@@ -442,8 +452,12 @@ export default function EncryptX() {
 
   const handleAuth = async () => {
     triggerBlink('auth-btn'); // Trigger Blink
-    if (!authUsername || !authPassword) { setAuthError("Please fill in Username and Password."); return; }
-    if (authMode === 'register' && !/^\d{5}$/.test(authUniqueId)) { setAuthError("Security ID must be exactly 5 digits (0-9)."); return; }
+    const usernameInput = authUsername.trim();
+    const passwordInput = authPassword.trim();
+    const uniqueIdInput = authUniqueId.trim();
+
+    if (!usernameInput || !passwordInput) { setAuthError("Please fill in Username and Password."); return; }
+    if (authMode === 'register' && !/^\d{5}$/.test(uniqueIdInput)) { setAuthError("Security ID must be exactly 5 digits (0-9)."); return; }
     setAuthError("");
 
     try {
@@ -453,12 +467,12 @@ export default function EncryptX() {
       const users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
       if (authMode === 'register') {
-        if (users.find(u => u.username === authUsername)) { setAuthError("Username taken."); return; }
-        if (users.find(u => u.unique_id === authUniqueId)) { setAuthError("ID already exists."); return; }
+        if (users.find(u => u.username?.toLowerCase() === usernameInput.toLowerCase())) { setAuthError("Username taken."); return; }
+        if (users.find(u => u.unique_id === uniqueIdInput)) { setAuthError("ID already exists."); return; }
 
         const newUser = {
-          username: authUsername, password: authPassword, unique_id: authUniqueId,
-          bio: "Available", nickname: authUsername, profile_pic: AVATARS[Math.floor(Math.random() * AVATARS.length)],
+          username: usernameInput, password: passwordInput, unique_id: uniqueIdInput,
+          bio: "Available", nickname: usernameInput, profile_pic: AVATARS[Math.floor(Math.random() * AVATARS.length)],
           blocked_users: [], status_msg: "Online", isOnline: true, created: serverTimestamp()
         };
         const ref = await addDoc(usersRef, newUser);
@@ -467,7 +481,9 @@ export default function EncryptX() {
         // Save to localStorage
         localStorage.setItem('encryptx_user', JSON.stringify(userWithId));
       } else {
-        const foundUser = users.find(u => u.username === authUsername && u.password === authPassword);
+        const foundUser = users.find(
+          u => u.username?.toLowerCase() === usernameInput.toLowerCase() && u.password === passwordInput
+        );
         if (!foundUser) setAuthError("Invalid credentials.");
         else {
           setAppUser(foundUser);
@@ -942,7 +958,26 @@ export default function EncryptX() {
         </div>
         <div className="px-6 py-2 text-[10px] opacity-50 font-bold uppercase tracking-[0.2em] flex justify-between items-center group"><span>Contacts</span><span className="bg-white/10 px-1.5 rounded text-[9px]">{contacts.length}</span></div>
         <div className="flex-1 overflow-y-auto px-4 space-y-1 pb-4 custom-scrollbar">
-          {contacts.map((contact, idx) => (<div key={idx} onClick={() => { setActiveChat({ id: contact.unique_id, name: contact.contact_nickname || contact.contact_username, type: 'private' }); setShowMobileChat(true); }} className="p-3 rounded-lg hover:bg-white/5 transition-all cursor-pointer group flex items-center gap-3 border border-transparent hover:border-white/5"><div className={`w-8 h-8 rounded-full bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center shrink-0`}><User className="w-4 h-4 opacity-50" /></div><div className="overflow-hidden flex-1"><div className="font-medium text-sm group-hover:text-white truncate">{contact.contact_nickname || contact.contact_username}</div><div className="text-[10px] opacity-40 font-mono">ID: {contact.contact_unique_id}</div></div></div>))}
+          {contacts.map((contact, idx) => (
+            <div
+              key={contact.id || idx}
+              onClick={() => {
+                const privateChannelId = getPrivateChatChannelId(contact.contact_unique_id);
+                if (!privateChannelId) return;
+                setActiveChat({
+                  id: privateChannelId,
+                  name: contact.contact_nickname || contact.contact_username,
+                  type: 'private',
+                  peerUniqueId: contact.contact_unique_id
+                });
+                setShowMobileChat(true);
+              }}
+              className="p-3 rounded-lg hover:bg-white/5 transition-all cursor-pointer group flex items-center gap-3 border border-transparent hover:border-white/5"
+            >
+              <div className={`w-8 h-8 rounded-full bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center shrink-0`}><User className="w-4 h-4 opacity-50" /></div>
+              <div className="overflow-hidden flex-1"><div className="font-medium text-sm group-hover:text-white truncate">{contact.contact_nickname || contact.contact_username}</div><div className="text-[10px] opacity-40 font-mono">ID: {contact.contact_unique_id}</div></div>
+            </div>
+          ))}
         </div>
         <div className="p-4 border-t border-white/5 space-y-3">
           <button id="connect-btn" onClick={() => { triggerBlink('connect-btn'); setShowAddContact(true); }} className={`w-full py-3 rounded-xl border ${currentTheme.border} ${currentTheme.accent} flex items-center justify-center gap-2 hover:bg-white/5 transition-all font-bold tracking-widest text-xs uppercase ${getBlinkClass('connect-btn')}`}><Search className="w-4 h-4" /> Connect via ID</button>
@@ -1111,7 +1146,7 @@ export default function EncryptX() {
               {/* Contacts Section */}
               <div className="px-2 py-1 text-[10px] font-bold opacity-50 uppercase mt-2">Contacts</div>
               {contacts.map(contact => (
-                <button key={contact.id} onClick={() => handleForward(contact.unique_id)} className="w-full p-3 rounded-lg hover:bg-white/10 flex items-center gap-3 text-left transition-colors">
+                <button key={contact.id} onClick={() => handleForward(getPrivateChatChannelId(contact.contact_unique_id))} className="w-full p-3 rounded-lg hover:bg-white/10 flex items-center gap-3 text-left transition-colors">
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center"><User className="w-4 h-4 opacity-50" /></div>
                   <div className="text-sm font-medium">{contact.contact_nickname || contact.contact_username}</div>
                 </button>

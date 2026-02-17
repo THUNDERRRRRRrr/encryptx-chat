@@ -42,8 +42,6 @@ import {
   setDoc,
   query,
   where,
-  orderBy,
-  limit,
   arrayUnion
 } from 'firebase/firestore';
 
@@ -315,6 +313,9 @@ export default function EncryptX() {
   };
   const blockedUsersRef = useRef(blockedUsers);
 
+  const activeChatRef = useRef(activeChat);
+  useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
+
   const chatEndRef = useRef(null);
   const timerRef = useRef(null);
   const videoRef = useRef(null);
@@ -388,102 +389,133 @@ export default function EncryptX() {
     blockedUsersRef.current = blockedUsers;
   }, [blockedUsers]);
 
+  // --- EFFECT 1: Stable data listeners — only re-run when the logged-in user changes ---
+  // IMPORTANT: activeChat is intentionally NOT in the deps here.
+  // We read it via activeChatRef so we never tear down the message subscription on tab switch.
   useEffect(() => {
     if (!appUser || !db) return;
 
     const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', appUser.id);
+
+    // Presence heartbeat
     const updatePresence = () => {
-      updateDoc(userDocRef, { lastActive: serverTimestamp(), isOnline: true }).catch(() => { });
+      updateDoc(userDocRef, { lastActive: serverTimestamp(), isOnline: true }).catch(() => {});
     };
     updatePresence();
     const heartbeat = setInterval(updatePresence, 60000);
 
-    const typingRef = collection(db, 'artifacts', appId, 'public', 'data', 'typing');
-    const unsubTyping = onSnapshot(typingRef, (snapshot) => {
-      const now = Date.now();
-      const activeTypers = snapshot.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(t => t.user !== appUser.username && (now - (t.timestamp?.toMillis() || 0) < 3000) && t.channel === activeChat.id)
-        .map(t => t.nickname || t.user);
-      setTypingUsers(activeTypers);
-    });
-
-    const unsubUser = onSnapshot(userDocRef, (doc) => {
-      if (doc.exists()) {
-        const data = doc.data();
+    // Listen for profile / blocked-user changes on own user doc
+    const unsubUser = onSnapshot(userDocRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
         const canonicalUniqueId = normalizeUniqueId(data.unique_id);
-        setAppUser(prev => ({ ...prev, ...data, unique_id: canonicalUniqueId || data.unique_id }));
+        // Only update fields we care about — do NOT replace the whole object (avoids id churn)
+        setAppUser(prev => ({
+          ...prev,
+          bio: data.bio, nickname: data.nickname, profile_pic: data.profile_pic,
+          status_msg: data.status_msg, isOnline: data.isOnline,
+          unique_id: canonicalUniqueId || data.unique_id,
+        }));
         if (canonicalUniqueId && canonicalUniqueId !== data.unique_id) {
-          updateDoc(userDocRef, { unique_id: canonicalUniqueId }).catch(() => { });
+          updateDoc(userDocRef, { unique_id: canonicalUniqueId }).catch(() => {});
         }
         if (data.blocked_users) setBlockedUsers(data.blocked_users);
       }
     });
 
+    // Message listener — NO orderBy/limit so no composite index is needed.
+    // We fetch all and sort client-side. This is the fix for messages not appearing.
     const msgsRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
-    const msgsQuery = query(msgsRef, orderBy('timestamp', 'desc'), limit(500));
-    const unsubMsg = onSnapshot(msgsQuery, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => {
-        const data = doc.data();
-        // Normalize: messages stored without channelId belong to global
-        return { id: doc.id, ...data, channelId: data.channelId || 'global' };
-      });
+    const unsubMsg = onSnapshot(msgsRef, (snapshot) => {
       const now = Date.now();
-
-      const processedMsgs = msgs
+      const processedMsgs = snapshot.docs
+        .map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            ...data,
+            // Normalize missing channelId to 'global'
+            channelId: data.channelId || 'global',
+            sortTime: data.timestamp?.toMillis ? data.timestamp.toMillis() : (data.createdAt || 0),
+          };
+        })
         .filter(m => {
           if (blockedUsersRef.current.includes(m.userId)) return false;
-          if (m.expiresAt && m.expiresAt.toMillis() <= now) return false;
+          if (m.expiresAt && m.expiresAt.toMillis && m.expiresAt.toMillis() <= now) return false;
           return true;
         })
-        .map(msg => ({
-          ...msg,
-          sortTime: msg.timestamp?.toMillis ? msg.timestamp.toMillis() : (msg.createdAt || Date.now())
-        }))
         .sort((a, b) => a.sortTime - b.sortTime);
 
-      const pinned = processedMsgs.find(m => m.isPinned && (m.channelId === activeChat.id || (!m.channelId && activeChat.id === 'global')));
+      // Update pinned message for whichever chat is currently active
+      const currentChatId = activeChatRef.current.id;
+      const pinned = processedMsgs.find(m => m.isPinned && m.channelId === currentChatId);
       setPinnedMessageId(pinned ? pinned.id : null);
 
+      // Mark incoming messages as read & play sound
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
           const msgData = change.doc.data();
-          if (msgData.user !== appUser.username && msgData.type !== 'system') { // Ignore system messages for sound
-            if (Date.now() - (msgData.timestamp?.toMillis() || 0) < 5000) {
-              notificationAudio.current.play().catch(() => { });
+          const msgChannelId = msgData.channelId || 'global';
+          if (msgData.userId !== appUser.id && msgData.type !== 'system') {
+            if (now - (msgData.timestamp?.toMillis?.() || 0) < 5000) {
+              notificationAudio.current.play().catch(() => {});
             }
-            if (activeChat.id === (msgData.channelId || 'global')) {
-              if (!msgData.read_by?.includes(appUser.id)) {
-                updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'messages', change.doc.id), {
-                  read_by: arrayUnion(appUser.id)
-                });
-              }
+            if (msgChannelId === activeChatRef.current.id && !msgData.read_by?.includes(appUser.id)) {
+              updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'messages', change.doc.id), {
+                read_by: arrayUnion(appUser.id),
+              }).catch(() => {});
             }
           }
         }
       });
-      setMessages(processedMsgs);
-    }, (err) => console.error("Msg Error:", err));
 
+      setMessages(processedMsgs);
+    }, (err) => console.error('[EncryptX] Msg listener error:', err));
+
+    // Groups listener
     const groupsRef = collection(db, 'artifacts', appId, 'public', 'data', 'groups');
     const unsubGroups = onSnapshot(groupsRef, (snapshot) => {
-      const allGroups = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      const myGroups = allGroups.filter(g => g.members?.includes(appUser.id) && !g.isSoftDeleted);
+      const myGroups = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(g => g.members?.includes(appUser.id) && !g.isSoftDeleted);
       setGroups(myGroups);
     });
 
+    // Contacts listener
     const contactsRef = collection(db, 'artifacts', appId, 'public', 'data', 'contacts');
     const unsubContacts = onSnapshot(contactsRef, (snapshot) => {
-      const allContacts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      const myContacts = allContacts.filter(c => c.owner_username === appUser.username);
+      const myContacts = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(c => c.owner_username === appUser.username);
       setContacts(myContacts);
     });
 
     return () => {
-      unsubMsg(); unsubContacts(); unsubUser(); unsubTyping(); unsubGroups();
+      unsubMsg();
+      unsubContacts();
+      unsubUser();
+      unsubGroups();
       clearInterval(heartbeat);
-      updateDoc(userDocRef, { isOnline: false }).catch(() => { });
+      updateDoc(userDocRef, { isOnline: false }).catch(() => {});
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appUser?.id]); // <-- appUser.id only: switching chats no longer restarts listeners
+
+  // --- EFFECT 2: Typing indicator — lightweight, safe to re-run on chat switch ---
+  useEffect(() => {
+    if (!appUser || !db) return;
+    const typingRef = collection(db, 'artifacts', appId, 'public', 'data', 'typing');
+    const unsubTyping = onSnapshot(typingRef, (snapshot) => {
+      const now = Date.now();
+      const activeTypers = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(t => t.user !== appUser.username
+          && (now - (t.timestamp?.toMillis?.() || 0) < 3000)
+          && t.channel === activeChat.id)
+        .map(t => t.nickname || t.user);
+      setTypingUsers(activeTypers);
+    });
+    return () => unsubTyping();
   }, [appUser?.id, activeChat.id]);
 
   // Scroll

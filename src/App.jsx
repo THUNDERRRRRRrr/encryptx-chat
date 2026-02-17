@@ -39,8 +39,7 @@ import {
   deleteDoc,
   setDoc,
   query,
-  where,
-  arrayUnion
+  where
 } from 'firebase/firestore';
 
 // ==========================================
@@ -173,15 +172,6 @@ const formatTime = (timestamp) => {
     return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-// Produces the same channel ID regardless of which user initiates the chat
-const buildPrivateChannelId = (idA, idB) => {
-  const pad = v => String(v ?? '').replace(/\D/g, '').padStart(5, '0').slice(-5);
-  const a = pad(idA), b = pad(idB);
-  if (!a || !b) return null;
-  const [lo, hi] = [a, b].sort();
-  return `dm_${lo}_${hi}`;
-};
-
 // ==========================================
 // PART 2: MAIN APPLICATION COMPONENT
 // ==========================================
@@ -269,11 +259,6 @@ export default function EncryptX() {
   const themeInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const inputAreaRef = useRef(null);
-  // Refs so listener callbacks always read latest value without needing to re-subscribe
-  const activeChatRef = useRef(activeChat);
-  const blockedUsersRef = useRef(blockedUsers);
-  useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
-  useEffect(() => { blockedUsersRef.current = blockedUsers; }, [blockedUsers]);
 
   // --- LOGIC: BLINK ENGINE ---
   const triggerBlink = (id) => {
@@ -304,121 +289,94 @@ export default function EncryptX() {
   }, []);
 
   // --- LOGIC: DATA LISTENERS ---
-  // EFFECT 1: Stable listeners — only restart on login/logout (appUser.id).
-  // activeChat and blockedUsers are read via refs so chat-switching never restarts this.
   useEffect(() => {
     if (!appUser || !firebaseUser || !db) return;
 
     const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', appUser.id);
-
-    // Presence heartbeat
     const updatePresence = () => {
-      updateDoc(userDocRef, { lastActive: serverTimestamp(), isOnline: true }).catch(() => {});
+        updateDoc(userDocRef, { lastActive: serverTimestamp(), isOnline: true }).catch(() => {});
     };
     updatePresence();
     const heartbeat = setInterval(updatePresence, 60000);
 
-    // Fix 5: Only sync fields that legitimately change — NOT lastActive — 
-    // so the heartbeat write doesn't cause appUser to update and restart listeners.
-    const unsubUser = onSnapshot(userDocRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setAppUser(prev => ({
-          ...prev,
-          nickname: data.nickname,
-          bio: data.bio,
-          profile_pic: data.profile_pic,
-          status_msg: data.status_msg,
-          unique_id: data.unique_id,
-        }));
-        if (data.blocked_users) setBlockedUsers(data.blocked_users);
-      }
+    const typingRef = collection(db, 'artifacts', appId, 'public', 'data', 'typing');
+    const unsubTyping = onSnapshot(typingRef, (snapshot) => {
+        const now = Date.now();
+        const activeTypers = snapshot.docs
+            .map(d => ({id: d.id, ...d.data()}))
+            .filter(t => t.user !== appUser.username && (now - (t.timestamp?.toMillis() || 0) < 3000) && t.channel === activeChat.id)
+            .map(t => t.nickname || t.user);
+        setTypingUsers(activeTypers);
     });
 
-    // Fix 1 & 2: No orderBy/limit (no index required). Read blockedUsers from ref.
-    // Fix 2: Use arrayUnion for read receipts — single atomic write, no read-modify-write loop.
+    const unsubUser = onSnapshot(userDocRef, (doc) => {
+        if (doc.exists()) {
+            const data = doc.data();
+            setAppUser(prev => ({ ...prev, ...data }));
+            if (data.blocked_users) setBlockedUsers(data.blocked_users);
+        }
+    });
+
     const msgsRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
     const unsubMsg = onSnapshot(msgsRef, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       const now = Date.now();
-      const processedMsgs = snapshot.docs
-        .map(d => {
-          const data = d.data();
-          return {
-            id: d.id, ...data,
-            channelId: data.channelId || 'global',
-            sortTime: data.timestamp?.toMillis ? data.timestamp.toMillis() : (data.createdAt || 0),
-          };
-        })
+      
+      const processedMsgs = msgs
         .filter(m => {
-          if (blockedUsersRef.current.includes(m.userId)) return false;
-          if (m.expiresAt && m.expiresAt.toMillis && m.expiresAt.toMillis() <= now) return false;
-          return true;
+            if (blockedUsers.includes(m.userId)) return false;
+            if (m.expiresAt && m.expiresAt.toMillis() <= now) return false;
+            return true;
         })
+        .map(msg => ({
+            ...msg,
+            sortTime: msg.timestamp?.toMillis ? msg.timestamp.toMillis() : (msg.createdAt || Date.now())
+        }))
         .sort((a, b) => a.sortTime - b.sortTime);
 
-      const currentChatId = activeChatRef.current.id;
-      const pinned = processedMsgs.find(m => m.isPinned && m.channelId === currentChatId);
+      const pinned = processedMsgs.find(m => m.isPinned && (m.channelId === activeChat.id || (!m.channelId && activeChat.id === 'global')));
       setPinnedMessageId(pinned ? pinned.id : null);
 
       snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const msgData = change.doc.data();
-          const msgChannel = msgData.channelId || 'global';
-          if (msgData.userId !== appUser.id && msgData.type !== 'system') {
-            if (now - (msgData.timestamp?.toMillis?.() || 0) < 5000) {
-              notificationAudio.current.play().catch(() => {});
-            }
-            // Fix 2: arrayUnion — no read, no overwrite, no feedback loop
-            if (msgChannel === activeChatRef.current.id && !msgData.read_by?.includes(appUser.id)) {
-              updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'messages', change.doc.id), {
-                read_by: arrayUnion(appUser.id)
-              }).catch(() => {});
-            }
+          if (change.type === 'added') {
+              const msgData = change.doc.data();
+              if (msgData.user !== appUser.username && msgData.type !== 'system') { // Ignore system messages for sound
+                  if (Date.now() - (msgData.timestamp?.toMillis() || 0) < 5000) {
+                     notificationAudio.current.play().catch(() => {});
+                  }
+                  if (activeChat.id === (msgData.channelId || 'global')) {
+                      if (!msgData.read_by?.includes(appUser.id)) {
+                          updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'messages', change.doc.id), {
+                              read_by: [...(msgData.read_by || []), appUser.id]
+                          });
+                      }
+                  }
+              }
           }
-        }
       });
       setMessages(processedMsgs);
-    }, (err) => console.error('Msg Error:', err));
+    }, (err) => console.error("Msg Error:", err));
 
     const groupsRef = collection(db, 'artifacts', appId, 'public', 'data', 'groups');
     const unsubGroups = onSnapshot(groupsRef, (snapshot) => {
-      const myGroups = snapshot.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(g => g.members?.includes(appUser.id) && !g.isSoftDeleted);
-      setGroups(myGroups);
+        const allGroups = snapshot.docs.map(d => ({id: d.id, ...d.data()}));
+        const myGroups = allGroups.filter(g => g.members?.includes(appUser.id) && !g.isSoftDeleted);
+        setGroups(myGroups);
     });
 
     const contactsRef = collection(db, 'artifacts', appId, 'public', 'data', 'contacts');
     const unsubContacts = onSnapshot(contactsRef, (snapshot) => {
-      const myContacts = snapshot.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(c => c.owner_username === appUser.username);
+      const allContacts = snapshot.docs.map(doc => doc.data());
+      const myContacts = allContacts.filter(c => c.owner_username === appUser.username);
       setContacts(myContacts);
     });
 
     return () => {
-      unsubMsg(); unsubContacts(); unsubUser(); unsubGroups();
+      unsubMsg(); unsubContacts(); unsubUser(); unsubTyping(); unsubGroups();
       clearInterval(heartbeat);
       updateDoc(userDocRef, { isOnline: false }).catch(() => {});
     };
-  }, [appUser?.id, firebaseUser]); // ← No blockedUsers, no activeChat.id
-
-  // EFFECT 2: Typing indicator — lightweight, ok to re-run on chat switch
-  useEffect(() => {
-    if (!appUser || !firebaseUser || !db) return;
-    const typingRef = collection(db, 'artifacts', appId, 'public', 'data', 'typing');
-    const unsubTyping = onSnapshot(typingRef, (snapshot) => {
-      const now = Date.now();
-      const activeTypers = snapshot.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(t => t.user !== appUser.username
-          && (now - (t.timestamp?.toMillis?.() || 0) < 3000)
-          && t.channel === activeChat.id)
-        .map(t => t.nickname || t.user);
-      setTypingUsers(activeTypers);
-    });
-    return () => unsubTyping();
-  }, [appUser?.id, firebaseUser, activeChat.id]);
+  }, [appUser?.id, firebaseUser, blockedUsers, activeChat.id]);
 
   // Scroll
   useLayoutEffect(() => {
@@ -452,14 +410,11 @@ export default function EncryptX() {
   const handleTypingInput = (e) => {
     setInputText(e.target.value);
     if (!appUser || !db) return;
-    // Fix 3: Debounce — only write to Firestore after user pauses for 400ms
+    const typingDoc = doc(db, 'artifacts', appId, 'public', 'data', 'typing', appUser.id);
+    setDoc(typingDoc, { 
+        user: appUser.username, nickname: appUser.nickname, channel: activeChat.id, timestamp: serverTimestamp() 
+    });
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      const typingDoc = doc(db, 'artifacts', appId, 'public', 'data', 'typing', appUser.id);
-      setDoc(typingDoc, {
-        user: appUser.username, nickname: appUser.nickname, channel: activeChat.id, timestamp: serverTimestamp()
-      }).catch(() => {});
-    }, 400);
   };
 
   const handleAuth = async () => {
@@ -565,23 +520,10 @@ export default function EncryptX() {
     if (!searchResult) return;
     const exists = contacts.find(c => c.contact_unique_id === searchResult.unique_id);
     if (exists) { alert("Already in contacts."); return; }
-    const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'contacts');
-    // Add for me → them
-    await addDoc(colRef, {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'contacts'), {
       owner_username: appUser.username, contact_username: searchResult.username,
       contact_unique_id: searchResult.unique_id, contact_nickname: searchResult.nickname
     });
-    // Add reciprocal them → me so they also see this DM appear
-    const theirSnap = await getDocs(query(colRef,
-      where('owner_username', '==', searchResult.username),
-      where('contact_unique_id', '==', appUser.unique_id)
-    ));
-    if (theirSnap.empty) {
-      await addDoc(colRef, {
-        owner_username: searchResult.username, contact_username: appUser.username,
-        contact_unique_id: appUser.unique_id, contact_nickname: appUser.nickname
-      });
-    }
     setSearchResult(null); setShowAddContact(false); setSearchQuery("");
   };
 
@@ -970,15 +912,7 @@ export default function EncryptX() {
         </div>
         <div className="px-6 py-2 text-[10px] opacity-50 font-bold uppercase tracking-[0.2em] flex justify-between items-center group"><span>Contacts</span><span className="bg-white/10 px-1.5 rounded text-[9px]">{contacts.length}</span></div>
         <div className="flex-1 overflow-y-auto px-4 space-y-1 pb-4 custom-scrollbar">
-            {contacts.map((contact, idx) => {
-              const dmChannelId = buildPrivateChannelId(appUser.unique_id, contact.contact_unique_id);
-              return (
-                <div key={idx} onClick={() => { setActiveChat({ id: dmChannelId, name: contact.contact_nickname || contact.contact_username, type: 'private' }); setShowMobileChat(true); }} className="p-3 rounded-lg hover:bg-white/5 transition-all cursor-pointer group flex items-center gap-3 border border-transparent hover:border-white/5">
-                  <div className={`w-8 h-8 rounded-full bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center shrink-0`}><User className="w-4 h-4 opacity-50" /></div>
-                  <div className="overflow-hidden flex-1"><div className="font-medium text-sm group-hover:text-white truncate">{contact.contact_nickname || contact.contact_username}</div><div className="text-[10px] opacity-40 font-mono">ID: {contact.contact_unique_id}</div></div>
-                </div>
-              );
-            })}
+            {contacts.map((contact, idx) => (<div key={idx} onClick={() => { setActiveChat({ id: contact.unique_id, name: contact.contact_nickname || contact.contact_username, type: 'private' }); setShowMobileChat(true); }} className="p-3 rounded-lg hover:bg-white/5 transition-all cursor-pointer group flex items-center gap-3 border border-transparent hover:border-white/5"><div className={`w-8 h-8 rounded-full bg-gradient-to-br from-white/10 to-white/5 flex items-center justify-center shrink-0`}><User className="w-4 h-4 opacity-50" /></div><div className="overflow-hidden flex-1"><div className="font-medium text-sm group-hover:text-white truncate">{contact.contact_nickname || contact.contact_username}</div><div className="text-[10px] opacity-40 font-mono">ID: {contact.contact_unique_id}</div></div></div>))}
         </div>
         <div className="p-4 border-t border-white/5 space-y-3">
             <button id="connect-btn" onClick={() => { triggerBlink('connect-btn'); setShowAddContact(true); }} className={`w-full py-3 rounded-xl border ${currentTheme.border} ${currentTheme.accent} flex items-center justify-center gap-2 hover:bg-white/5 transition-all font-bold tracking-widest text-xs uppercase ${getBlinkClass('connect-btn')}`}><Search className="w-4 h-4" /> Connect via ID</button>

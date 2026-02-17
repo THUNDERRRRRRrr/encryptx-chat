@@ -423,7 +423,11 @@ export default function EncryptX() {
     const msgsRef = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
     const msgsQuery = query(msgsRef, orderBy('timestamp', 'desc'), limit(500));
     const unsubMsg = onSnapshot(msgsQuery, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const msgs = snapshot.docs.map(doc => {
+        const data = doc.data();
+        // Normalize: messages stored without channelId belong to global
+        return { id: doc.id, ...data, channelId: data.channelId || 'global' };
+      });
       const now = Date.now();
 
       const processedMsgs = msgs
@@ -537,10 +541,8 @@ export default function EncryptX() {
     triggerBlink('auth-btn'); // Trigger Blink
     const usernameInput = authUsername.trim();
     const passwordInput = authPassword.trim();
-    const uniqueIdInput = normalizeUniqueId(authUniqueId);
 
     if (!usernameInput || !passwordInput) { setAuthError("Please fill in Username and Password."); return; }
-    if (authMode === 'register' && !/^\d{5}$/.test(uniqueIdInput)) { setAuthError("Security ID must be exactly 5 digits (0-9)."); return; }
     if (!isFirebaseAuthReady) { setAuthError("Secure session is still initializing. Please try again in a second."); return; }
     if (firebaseAuthError) {
       console.warn('[EncryptX] Firebase auth warning:', firebaseAuthError);
@@ -550,16 +552,31 @@ export default function EncryptX() {
     try {
       if (!db) throw new Error("Database not connected");
       const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
+      // Always do a fresh fetch to avoid stale cache issues
       const snap = await getDocs(usersRef);
       const users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 
       if (authMode === 'register') {
-        if (users.find(u => u.username?.toLowerCase() === usernameInput.toLowerCase())) { setAuthError("Username taken."); return; }
+        // Check username (case-insensitive, trimmed)
+        if (users.find(u => u.username?.toLowerCase().trim() === usernameInput.toLowerCase())) {
+          setAuthError("Username already taken. Please choose a different codename.");
+          return;
+        }
+
+        // Auto-generate a unique ID if the field is blank or invalid
+        let uniqueIdInput = normalizeUniqueId(authUniqueId);
+        if (!/^\d{5}$/.test(uniqueIdInput)) {
+          const autoId = suggestUniqueFiveDigitId(users);
+          if (!autoId) { setAuthError("All 5-digit IDs are used. Contact admin."); return; }
+          uniqueIdInput = autoId;
+          setAuthUniqueId(autoId);
+        }
+
         if (users.find(u => normalizeUniqueId(u.unique_id) === uniqueIdInput)) {
           const suggestedId = suggestUniqueFiveDigitId(users);
           if (suggestedId) {
             setAuthUniqueId(suggestedId);
-            setAuthError(`ID ${uniqueIdInput} already exists. Suggested available ID: ${suggestedId}`);
+            setAuthError(`ID ${uniqueIdInput} already in use. A free ID has been suggested — press Register again.`);
           } else {
             setAuthError("All 5-digit IDs are used. Contact admin.");
           }
@@ -569,7 +586,7 @@ export default function EncryptX() {
         const newUser = {
           username: usernameInput, password: passwordInput, unique_id: uniqueIdInput,
           bio: "Available", nickname: usernameInput, profile_pic: AVATARS[Math.floor(Math.random() * AVATARS.length)],
-          blocked_users: [], status_msg: "Online", isOnline: true, created: serverTimestamp()
+          blocked_users: [], status_msg: "Online", isOnline: true, created: serverTimestamp(),
         };
         const ref = await addDoc(usersRef, newUser);
         const userWithId = { id: ref.id, ...newUser };
@@ -684,10 +701,35 @@ export default function EncryptX() {
     const contactUniqueId = normalizeUniqueId(searchResult.unique_id);
     const exists = contacts.find(c => normalizeUniqueId(c.contact_unique_id) === contactUniqueId);
     if (exists) { alert("Already in contacts."); return; }
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'contacts'), {
-      owner_username: appUser.username, contact_username: searchResult.username,
-      contact_unique_id: contactUniqueId, contact_nickname: searchResult.nickname
+
+    const contactsColRef = collection(db, 'artifacts', appId, 'public', 'data', 'contacts');
+
+    // Add contact entry for ME → THEM
+    await addDoc(contactsColRef, {
+      owner_username: appUser.username,
+      owner_unique_id: appUser.unique_id,
+      contact_username: searchResult.username,
+      contact_unique_id: contactUniqueId,
+      contact_nickname: searchResult.nickname || searchResult.username
     });
+
+    // Add reciprocal contact entry for THEM → ME so they can also see the DM channel
+    const theirContactExists = await getDocs(
+      query(contactsColRef,
+        where('owner_username', '==', searchResult.username),
+        where('contact_unique_id', '==', appUser.unique_id)
+      )
+    );
+    if (theirContactExists.empty) {
+      await addDoc(contactsColRef, {
+        owner_username: searchResult.username,
+        owner_unique_id: contactUniqueId,
+        contact_username: appUser.username,
+        contact_unique_id: appUser.unique_id,
+        contact_nickname: appUser.nickname || appUser.username
+      });
+    }
+
     setSearchResult(null); setShowAddContact(false); setSearchQuery("");
   };
 
@@ -1053,8 +1095,8 @@ export default function EncryptX() {
   };
 
   const filteredMessages = messages.filter(m => {
-    const msgChannelId = m.channelId || 'global';
-    return msgChannelId === activeChat.id;
+    // channelId is already normalized to 'global' for legacy messages (done in snapshot listener)
+    return (m.channelId || 'global') === activeChat.id;
   });
   
   // Debug logging (can be removed in production)
@@ -1096,7 +1138,7 @@ export default function EncryptX() {
           {!authError && firebaseAuthError && <div className="bg-yellow-900/30 border border-yellow-500/40 text-yellow-200 px-4 py-3 rounded mb-6 text-xs">Auth warning: {firebaseAuthError}</div>}
           <div className="space-y-4">
             <div className="relative group"><User className="absolute left-4 top-3.5 w-5 h-5 text-gray-500" /><input value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} className={`w-full pl-12 pr-4 py-3 rounded-xl ${currentTheme.inputBg} ${currentTheme.text} border border-gray-700 focus:${currentTheme.border} outline-none`} placeholder="CODENAME" /></div>
-            {authMode === 'register' && (<div className="relative group"><Key className="absolute left-4 top-3.5 w-5 h-5 text-gray-500" /><input value={authUniqueId} onChange={(e) => setAuthUniqueId(e.target.value.replace(/\D/g, '').slice(0, 5))} className={`w-full pl-12 pr-4 py-3 rounded-xl ${currentTheme.inputBg} ${currentTheme.text} border border-gray-700 focus:${currentTheme.border} outline-none`} placeholder="5-DIGIT SECURE ID" /></div>)}
+            {authMode === 'register' && (<div className="relative group"><Key className="absolute left-4 top-3.5 w-5 h-5 text-gray-500" /><input value={authUniqueId} onChange={(e) => setAuthUniqueId(e.target.value.replace(/\D/g, '').slice(0, 5))} className={`w-full pl-12 pr-4 py-3 rounded-xl ${currentTheme.inputBg} ${currentTheme.text} border border-gray-700 focus:${currentTheme.border} outline-none`} placeholder="5-DIGIT SECURE ID (auto if blank)" /></div>)}
             <div className="relative group"><Hash className="absolute left-4 top-3.5 w-5 h-5 text-gray-500" /><input type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} className={`w-full pl-12 pr-4 py-3 rounded-xl ${currentTheme.inputBg} ${currentTheme.text} border border-gray-700 focus:${currentTheme.border} outline-none`} placeholder="ACCESS KEY" /></div>
             <button id="auth-btn" onClick={handleAuth} className={`w-full py-4 rounded-xl font-bold ${currentTheme.accentBg} text-black hover:opacity-90 transition-all mt-2 ${getBlinkClass('auth-btn')}`}>{authMode === 'login' ? 'INITIALIZE LINK' : 'ESTABLISH IDENTITY'}</button>
             <div className="flex justify-center mt-4"><button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(""); setAuthUniqueId(""); }} className={`text-xs text-gray-500 hover:${currentTheme.text} transition-colors`}>{authMode === 'login' ? 'NO IDENTITY? REGISTER' : 'IDENTITY EXISTS? LOGIN'}</button></div>

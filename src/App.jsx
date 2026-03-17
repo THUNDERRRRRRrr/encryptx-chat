@@ -1,16 +1,4 @@
-/* NOVA SYSTEM: EncryptX v3.5 - Complete System
-   STRUCTURE:
-   1. Imports & Config
-   2. Theme Engine
-   3. Utils & Helpers
-   4. Main Component (EncryptX)
-      - State Management
-      - Logic & Handlers
-      - Render: Auth Screen
-      - Render: Sidebar (Contacts/Groups)
-      - Render: Main Chat Interface
-      - Render: Modals (Profile, Search, etc.)
-*/
+
 
 import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { 
@@ -42,9 +30,6 @@ import {
   where
 } from 'firebase/firestore';
 
-// ==========================================
-// PART 1: CONFIGURATION & THEMES
-// ==========================================
 
 const THEME_PRESETS = [
   {
@@ -132,8 +117,7 @@ const STATIC_EMOJI_CATEGORIES = {
 
 const NOTIFY_SOUND_URL = "https://assets.mixkit.co/active_storage/sfx/2573/2573-preview.mp3";
 
-// --- FIREBASE SETUP ---
-// REPLACE THIS OBJECT WITH YOUR OWN FIREBASE CONFIG FROM THE CONSOLE
+
 const firebaseConfig = {
   apiKey: "AIzaSyD300-8ITn24Zexmn5gUm8VmmeAhq9QfDY",
   authDomain: "encryptx-web-0721.firebaseapp.com",
@@ -155,7 +139,6 @@ try {
 
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'encryptx-local-dev';
 
-// --- UTILS ---
 const formatChatDate = (timestamp) => {
     if (!timestamp) return '';
     const date = new Date(timestamp);
@@ -172,9 +155,7 @@ const formatTime = (timestamp) => {
     return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-// ==========================================
-// PART 2: MAIN APPLICATION COMPONENT
-// ==========================================
+
 
 export default function EncryptX() {
   const [firebaseUser, setFirebaseUser] = useState(null);
@@ -186,7 +167,7 @@ export default function EncryptX() {
   const [inputText, setInputText] = useState("");
   const [currentTheme, setCurrentTheme] = useState(THEME_PRESETS[0]);
   
-  // UI State
+
   const [isSearching, setIsSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResult, setSearchResult] = useState(null);
@@ -197,14 +178,13 @@ export default function EncryptX() {
   const [newGroupName, setNewGroupName] = useState("");
   const [showGroupSettings, setShowGroupSettings] = useState(false);
   
-  // Responsive State
+
   const [showMobileChat, setShowMobileChat] = useState(false);
   
-  // Forwarding State
+
   const [showForwardModal, setShowForwardModal] = useState(false);
   const [msgToForward, setMsgToForward] = useState(null);
 
-  // Interaction State
   const [selectedMsg, setSelectedMsg] = useState(null);
   const [editingMsgId, setEditingMsgId] = useState(null);
   const [typingUsers, setTypingUsers] = useState([]);
@@ -213,10 +193,9 @@ export default function EncryptX() {
       return saved ? JSON.parse(saved) : ["👍", "❤️", "😂", "😮", "😢", "🙏", "🔥", "👀"];
   });
 
-  // Blink State
+
   const [blinkingId, setBlinkingId] = useState(null);
 
-  // Rich Media & Actions
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [emojiCategory, setEmojiCategory] = useState("Quick");
   const [showAttachMenu, setShowAttachMenu] = useState(false);
@@ -229,18 +208,18 @@ export default function EncryptX() {
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [replyTo, setReplyTo] = useState(null);
   
-  // Profile & Theme Edit
+
   const [editBio, setEditBio] = useState("");
   const [editNickname, setEditNickname] = useState("");
   const [editStatus, setEditStatus] = useState("Online"); 
   const [editAvatar, setEditAvatar] = useState("");
   const [customImageLoading, setCustomImageLoading] = useState(false);
   
-  // Group Admin State
+
   const [memberAddQuery, setMemberAddQuery] = useState("");
   const [deleteKeyInput, setDeleteKeyInput] = useState("");
 
-  // Auth State
+
   const [authMode, setAuthMode] = useState('login');
   const [authUsername, setAuthUsername] = useState("");
   const [authUniqueId, setAuthUniqueId] = useState(""); 
@@ -260,7 +239,7 @@ export default function EncryptX() {
   const typingTimeoutRef = useRef(null);
   const inputAreaRef = useRef(null);
 
-  // --- LOGIC: BLINK ENGINE ---
+  
   const triggerBlink = (id) => {
       setBlinkingId(id);
       setTimeout(() => setBlinkingId(null), 250); // 250ms visual flash
@@ -270,7 +249,7 @@ export default function EncryptX() {
       return blinkingId === id ? "ring-2 ring-white bg-white/20 scale-[1.02] shadow-[0_0_15px_rgba(255,255,255,0.3)] transition-all duration-100" : "transition-all duration-300";
   };
 
-  // --- LOGIC: INITIALIZATION ---
+
   useEffect(() => {
     if (!auth) return;
     const initAuth = async () => {
@@ -288,7 +267,7 @@ export default function EncryptX() {
     return onAuthStateChanged(auth, (user) => setFirebaseUser(user));
   }, []);
 
-  // --- LOGIC: DATA LISTENERS ---
+ 
   useEffect(() => {
     if (!appUser || !firebaseUser || !db) return;
 
@@ -378,7 +357,6 @@ export default function EncryptX() {
     };
   }, [appUser?.id, firebaseUser, blockedUsers, activeChat.id]);
 
-  // Scroll
   useLayoutEffect(() => {
      if (!selectedMsg && !editingMsgId) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length, selectedMsg, editingMsgId, activeChat.id, showMobileChat]); 
@@ -397,7 +375,7 @@ export default function EncryptX() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [selectedMsg]);
 
-  // --- LOGIC: HELPER FUNCTIONS ---
+ 
   const updateEmojiPreferences = (emoji) => {
       setRecentEmojis(prev => {
           const filtered = prev.filter(e => e !== emoji);
@@ -482,21 +460,20 @@ export default function EncryptX() {
   };
 
   const handleSearch = async () => {
-    triggerBlink('locate-btn'); // Trigger Blink
+    triggerBlink('locate-btn'); 
     if (!searchQuery) return;
     const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
     
-    // Optimised Search: Try specific queries first
+
     let found = null;
-    
-    // 1. Search by unique_id (Fastest)
+  
     try {
         const qId = query(usersRef, where('unique_id', '==', searchQuery));
         const snapId = await getDocs(qId);
         if (!snapId.empty) found = snapId.docs[0].data();
     } catch (e) { console.log("Index query failed, falling back"); }
 
-    // 2. Search by username if no ID match
+  
     if (!found) {
         try {
             const qUser = query(usersRef, where('username', '==', searchQuery));
@@ -505,7 +482,7 @@ export default function EncryptX() {
         } catch (e) { console.log("Index query failed"); }
     }
 
-    // 3. Fallback to client-side filter (if indexes missing)
+    
     if (!found) {
         const snap = await getDocs(usersRef);
         const users = snap.docs.map(d => d.data());
@@ -527,7 +504,7 @@ export default function EncryptX() {
     setSearchResult(null); setShowAddContact(false); setSearchQuery("");
   };
 
-  // --- LOGIC: ADVANCED GROUP MANAGEMENT ---
+
   const addSystemMessage = async (channelId, text) => {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
           text: text, type: 'system', channelId: channelId, timestamp: serverTimestamp(), read_by: []
@@ -615,15 +592,14 @@ export default function EncryptX() {
       setShowGroupSettings(false);
   };
 
-  // --- LOGIC: MESSAGING ---
   const submitMessage = async (e, type = 'text', content = null, targetChannelId = null) => {
     if (e) e.preventDefault();
-    if (type === 'text') triggerBlink('send-btn'); // Trigger Blink
+    if (type === 'text') triggerBlink('send-btn'); 
 
     const msgContent = content || inputText.trim();
     if (!msgContent && type === 'text') return;
     
-    // If forwarding (targetChannelId is present), don't clear main input or edit states
+ 
     const isForwarding = !!targetChannelId;
     const docIdToEdit = isForwarding ? null : editingMsgId;
     const replyContext = isForwarding ? null : (replyTo ? { id: replyTo.id, user: replyTo.user, text: replyTo.text || "[Media]" } : null);
@@ -759,7 +735,7 @@ export default function EncryptX() {
   const toggleRecording = () => isRecording ? stopRecording() : startRecording();
   const closeMenus = () => { setShowEmojiPicker(false); setShowAttachMenu(false); setShowTimerMenu(false); setShowAddContact(false); };
 
-  // --- SUB-COMPONENTS ---
+  
   const DateSeparator = ({ timestamp }) => (
       <div className="flex justify-center my-4">
           <div className="bg-black/40 backdrop-blur border border-white/5 rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-gray-400 shadow-sm flex items-center gap-1.5">
@@ -863,7 +839,7 @@ export default function EncryptX() {
       return rendered;
   };
 
-  // --- RENDER: LOGIN ---
+
   if (!appUser) {
     return (
       <div className={`min-h-screen ${currentTheme.bg} flex items-center justify-center font-sans relative`}>
@@ -883,7 +859,7 @@ export default function EncryptX() {
     );
   }
 
-  // --- RENDER: MAIN APP ---
+
   return (
     <div className={`flex h-screen ${currentTheme.bg} ${currentTheme.text} font-sans overflow-hidden transition-all duration-500`} style={{ backgroundImage: currentTheme.bgImage }}>
       <input type="file" ref={galleryInputRef} accept="image/*" className="hidden" onChange={(e) => { handleFileSelect(e, 'image'); setShowAttachMenu(false); }} />
@@ -891,7 +867,7 @@ export default function EncryptX() {
       <input type="file" ref={profileInputRef} accept="image/*" className="hidden" onChange={(e) => handleFileSelect(e, 'profile')} />
       <input type="file" ref={themeInputRef} accept="image/*" className="hidden" onChange={handleThemeUpload} />
 
-      {/* SIDEBAR */}
+      {        }
       <div className={`w-full md:w-80 ${currentTheme.sidebar} flex flex-col border-r border-white/5 shadow-xl z-20 ${showMobileChat ? 'hidden' : 'flex'} md:flex`}>
         <div className={`p-6 border-b border-white/5 bg-black/10 flex items-center gap-3`}>
              <Shield className={`w-8 h-8 ${currentTheme.accent}`} />
@@ -920,7 +896,7 @@ export default function EncryptX() {
         </div>
       </div>
 
-      {/* MAIN CHAT */}
+      {          }
       <div className={`flex-1 flex flex-col relative ${showMobileChat ? 'flex' : 'hidden'} md:flex`} onClick={closeMenus}>
         <div className={`h-16 border-b border-white/5 flex items-center justify-between px-6 ${currentTheme.sidebar} sticky top-0 z-10 shadow-sm transition-all duration-300 ${selectedMsg ? 'bg-black/80' : ''}`}>
           {selectedMsg ? (
@@ -962,7 +938,7 @@ export default function EncryptX() {
         </div>
       </div>
 
-      {/* --- GROUP SETTINGS MODAL --- */}
+      {                      }
       {showGroupSettings && activeChat.type === 'group' && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in zoom-in-95 duration-200">
               <div className={`w-full max-w-lg ${currentTheme.sidebar} border border-white/10 rounded-2xl shadow-2xl flex flex-col max-h-[85vh]`}>
@@ -982,16 +958,16 @@ export default function EncryptX() {
                       <button onClick={() => setShowGroupSettings(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X className="w-5 h-5"/></button>
                   </div>
 
-                  {/* Body */}
+                  {      }
                   <div className="p-6 overflow-y-auto custom-scrollbar flex-1 space-y-6">
-                      {/* Members Section */}
+                      {            }
                       <div className="space-y-3">
                           <div className="flex justify-between items-center">
                               <label className="text-xs font-bold uppercase tracking-widest opacity-50">Members</label>
                               <div className="text-xs opacity-50 font-mono">ID: {groups.find(g => g.id === activeChat.id)?.id.slice(0,8)}...</div>
                           </div>
                           
-                          {/* Add Member Input */}
+                          {            }
                           {groups.find(g => g.id === activeChat.id)?.admins.includes(appUser.id) && (
                               <div className="flex gap-2">
                                   <input value={memberAddQuery} onChange={(e) => setMemberAddQuery(e.target.value)} placeholder="Add member via 5-digit ID..." className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-white/30" />
@@ -999,10 +975,10 @@ export default function EncryptX() {
                               </div>
                           )}
 
-                          {/* Member List */}
+                          {               }
                           <div className="space-y-2">
                               {groups.find(g => g.id === activeChat.id)?.members.map(memberId => {
-                                  // Fetch member details (simulated by finding owner ID in this scope or generic)
+                                
                                   const isAdmin = groups.find(g => g.id === activeChat.id)?.admins.includes(memberId);
                                   const isOwner = groups.find(g => g.id === activeChat.id)?.ownerId === memberId;
                                   return (
@@ -1020,7 +996,7 @@ export default function EncryptX() {
                                                   <div className="text-[10px] opacity-40 font-mono">{memberId.slice(0, 12)}...</div>
                                               </div>
                                           </div>
-                                          {/* Admin Actions */}
+                                          {           }
                                           {groups.find(g => g.id === activeChat.id)?.admins.includes(appUser.id) && memberId !== appUser.id && (
                                               <button onClick={() => handleKickMember(memberId)} className="p-2 hover:bg-red-500/20 text-red-400 rounded-lg transition-colors" title="Kick Member">
                                                   <UserMinus className="w-4 h-4"/>
@@ -1032,7 +1008,7 @@ export default function EncryptX() {
                           </div>
                       </div>
 
-                      {/* Danger Zone (Owner Only) */}
+                      {               }
                       {groups.find(g => g.id === activeChat.id)?.ownerId === appUser.id && (
                           <div className="pt-6 border-t border-white/10 space-y-4">
                               <label className="text-xs font-bold uppercase tracking-widest text-red-400 flex items-center gap-2"><AlertTriangle className="w-3 h-3"/> Danger Zone</label>
@@ -1051,7 +1027,7 @@ export default function EncryptX() {
                       )}
                   </div>
 
-                  {/* Footer */}
+                  {           }
                   <div className="p-6 border-t border-white/10 bg-black/20 flex justify-between items-center">
                       <button onClick={handleLeaveGroup} className="text-red-400 text-xs font-bold hover:underline flex items-center gap-2"><LogOut className="w-3 h-3"/> Leave Group</button>
                       <div className="text-[10px] opacity-30 font-mono">SECURE KEY ROTATION ACTIVE</div>
@@ -1060,7 +1036,7 @@ export default function EncryptX() {
           </div>
       )}
 
-      {/* --- FORWARD MESSAGE MODAL --- */}
+      {                         }
       {showForwardModal && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-6 animate-in zoom-in-95 duration-200">
               <div className={`w-full max-w-sm ${currentTheme.sidebar} border border-white/20 rounded-2xl overflow-hidden shadow-2xl relative flex flex-col max-h-[80vh]`}>
@@ -1069,7 +1045,7 @@ export default function EncryptX() {
                       <button onClick={() => { setShowForwardModal(false); setMsgToForward(null); }}><X className="w-5 h-5 text-gray-500 hover:text-white"/></button>
                   </div>
                   <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
-                      {/* Groups Section */}
+                      {           }
                       {groups.length > 0 && <div className="px-2 py-1 text-[10px] font-bold opacity-50 uppercase">Groups</div>}
                       {groups.map(group => (
                           <button key={group.id} onClick={() => handleForward(group.id)} className="w-full p-3 rounded-lg hover:bg-white/10 flex items-center gap-3 text-left transition-colors">
@@ -1078,7 +1054,7 @@ export default function EncryptX() {
                           </button>
                       ))}
                       
-                      {/* Contacts Section */}
+                      {               }
                       <div className="px-2 py-1 text-[10px] font-bold opacity-50 uppercase mt-2">Contacts</div>
                       {contacts.map(contact => (
                           <button key={contact.id} onClick={() => handleForward(contact.unique_id)} className="w-full p-3 rounded-lg hover:bg-white/10 flex items-center gap-3 text-left transition-colors">
@@ -1091,7 +1067,7 @@ export default function EncryptX() {
           </div>
       )}
 
-      {/* --- CONNECT ID MODAL --- */}
+      {                       }
       {showAddContact && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-6 animate-in zoom-in-95 duration-200">
               <div className={`w-full max-w-sm ${currentTheme.sidebar} border border-white/20 rounded-2xl overflow-hidden shadow-2xl relative p-6`}>
@@ -1114,7 +1090,7 @@ export default function EncryptX() {
           </div>
       )}
 
-      {/* SEARCH RESULT MODAL (Verification Card) */}
+      {                               }
       {searchResult && (
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-6 animate-in zoom-in-95 duration-200">
               <div className={`w-full max-w-sm ${currentTheme.sidebar} border border-white/20 rounded-2xl overflow-hidden shadow-2xl relative`}>
